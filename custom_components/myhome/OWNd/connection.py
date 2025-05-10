@@ -6,6 +6,7 @@ import hashlib
 import string
 import random
 import logging
+import time
 from typing import Union
 from urllib.parse import urlparse
 
@@ -187,6 +188,8 @@ class OWNSession:
 
         self._stream_reader: asyncio.StreamReader
         self._stream_writer: asyncio.StreamWriter
+
+        self._last_reconnection_time = time.time()
 
     @property
     def gateway(self) -> OWNGateway:
@@ -648,7 +651,11 @@ class OWNEventSession(OWNSession):
         """Acts as an entry point to read messages on the event bus.
         It will read one frame and return it as an OWNMessage object"""
         try:
-            data = await self._stream_reader.readuntil(OWNSession.SEPARATOR)
+            #data = await self._stream_reader.readuntil(OWNSession.SEPARATOR)
+            tnext = round(120-(time.time()-self._last_reconnection_time))
+            if(tnext <1):
+                tnext = 1
+            data = await asyncio.wait_for(self._stream_reader.readuntil(OWNSession.SEPARATOR), timeout=tnext)
             _decoded_data = data.decode()
             _message = OWNMessage.parse(_decoded_data)
             return _message if _message else _decoded_data
@@ -667,6 +674,15 @@ class OWNEventSession(OWNSession):
         except ConnectionError:
             self._logger.exception("%s Connection error:", self._gateway.log_id)
             return None
+        except asyncio.TimeoutError as te:
+            #self._logger.warning('time is up')
+            #res = await self.test_connection()
+            #self._logger.warning('res')
+            self.logger.info("Time is up. Force reconnection")
+            await self.close()
+            await self.connect()
+            self.logger.info("Now waiting for events from the gateway (e.g. a cover opening/closing)")
+            self._last_reconnection_time = time.time()
         except Exception:  # pylint: disable=broad-except
             self._logger.exception("%s Event session crashed.", self._gateway.log_id)
             return None
